@@ -31,10 +31,11 @@ from collections import Counter
 # ── Add project root to path ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
 
-from core.pcap_reader   import PcapReader, PcapWriter
-from core.packet_parser import PacketParser
-from core.sni_extractor import DPIInspector
-from core.flow_tracker  import FlowTracker, FlowState
+from core.pcap_reader    import PcapReader, PcapWriter
+from core.packet_parser  import PacketParser
+from core.sni_extractor  import DPIInspector
+from core.flow_tracker   import FlowTracker, FlowState
+from ml.feature_pipeline import FeaturePipeline
 
 
 # ── ANSI Colors (works on all modern terminals) ───────────────────────────────
@@ -117,7 +118,8 @@ def run(input_pcap: str,
         blocked_domains: list = None,
         blocked_ips: list = None,
         blocked_apps: list = None,
-        verbose: bool = False) -> dict:
+        verbose: bool = False,
+        export_dir: str = None) -> dict:
 
     banner()
 
@@ -236,6 +238,18 @@ def run(input_pcap: str,
     _print_report(tracker, total_pkts, forwarded, dropped,
                   dpi_hits, parse_errors, elapsed, output_pcap)
 
+    # ── Phase 2: ML Feature Extraction + Anomaly Detection ───────────────────
+    pipeline = FeaturePipeline()
+    pipeline.run(tracker)
+    pipeline.print_report()
+
+    # Export to disk if requested
+    if export_dir:
+        paths = pipeline.export(export_dir)
+        print(f"\n{C.GREEN}[Export] Files written to: {export_dir}{C.RESET}")
+        for name, path in paths.items():
+            print(f"  {name}: {path}")
+
     return {
         "total_packets": total_pkts,
         "forwarded":     forwarded,
@@ -243,6 +257,9 @@ def run(input_pcap: str,
         "dpi_hits":      dpi_hits,
         "flows":         tracker.flow_count,
         "elapsed":       elapsed,
+        "anomalies":     sum(1 for fv in pipeline.feature_vectors if fv.is_anomaly),
+        "beacons":       sum(1 for r in pipeline.beacon_results if r.is_beacon),
+        "scanners":      sum(1 for r in pipeline.scan_results if r.is_scanner),
     }
 
 
@@ -337,6 +354,8 @@ def main():
                     metavar="APP", help="Block app by name (e.g. TikTok, YouTube)")
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="Show per-packet DPI results")
+    ap.add_argument("--export", "-e", metavar="DIR",
+                    help="Export ML features, anomalies, and summary JSON to DIR")
 
     args = ap.parse_args()
 
@@ -351,6 +370,7 @@ def main():
         blocked_ips=args.block_ip,
         blocked_apps=args.block_app,
         verbose=args.verbose,
+        export_dir=args.export,
     )
 
 
